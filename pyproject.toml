@@ -1,0 +1,32 @@
+[project]
+name = "padel-booking-calendar"
+version = "0.1.0"
+description = "A local FastAPI dashboard for comparing PadelMates and Playtomic booking exports."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+  { name = "JustSamPai" }
+]
+dependencies = [
+  "fastapi>=0.111,<1.0",
+  "requests>=2.32,<3.0",
+  "tzdata>=2024.1",
+  "uvicorn[standard]>=0.30,<1.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<9.0",
+  "ruff>=0.6,<1.0"
+]
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Padel Booking Calendar</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#1f4f5f" />
+  <link rel="manifest" href="/static/manifest.json" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local booking monitor</p>
+        <h1>Padel Calendar</h1>
+        <p class="subtitle">
+          Compare PadelMates and Playtomic exports, then spot booking gaps before they reach court availability.
+        </p>
+      </div>
+
+      <section class="status-card">
+        <div class="status-row">
+          <span id="connection_dot" class="connection-dot offline"></span>
+          <span id="connection_text">Connecting...</span>
+        </div>
+        <p id="last_updated">Last updated: never</p>
+      </section>
+    </header>
+
+    <section class="summary-grid">
+      <article class="summary-card">
+        <span class="summary-label">PadelMates</span>
+        <strong id="padelmates_count">0</strong>
+      </article>
+
+      <article class="summary-card">
+        <span class="summary-label">Playtomic</span>
+        <strong id="playtomic_count">0</strong>
+      </article>
+
+      <article class="summary-card warning">
+        <span class="summary-label">Mismatched dates</span>
+        <strong id="mismatch_count">0</strong>
+      </article>
+    </section>
+
+    <section class="legend">
+      <span><i class="legend-dot padelmates"></i>PadelMates</span>
+      <span><i class="legend-dot playtomic"></i>Playtomic</span>
+      <span><i class="legend-dot missing"></i>Missing in Playtomic</span>
+    </section>
+
+    <section class="layout">
+      <section class="calendar-card">
+        <div class="section-heading">
+          <h2>Booking calendar</h2>
+          <p>Dates are grouped from the latest local cache files.</p>
+        </div>
+
+        <div id="calendar_grid" class="calendar-grid"></div>
+      </section>
+
+      <aside class="details-card">
+        <div class="section-heading">
+          <h2 id="selected_date_title">Select a date</h2>
+          <p id="selected_date_summary">Bookings will appear here.</p>
+        </div>
+
+        <div id="booking_details" class="booking-details empty-state">
+          No date selected yet.
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

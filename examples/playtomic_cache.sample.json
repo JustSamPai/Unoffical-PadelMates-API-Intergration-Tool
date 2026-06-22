@@ -1,0 +1,14 @@
+{
+  "bookings": [
+    {
+      "id": "pt-9001",
+      "date": "2026-06-23",
+      "start_time": "09:00",
+      "end_time": "10:30",
+      "court": "Court 1",
+      "player_name": "Alex Morgan",
+      "category": "Book court",
+      "booking_type": "Normal"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "activity_records": [
+    {
+      "activity_id": "pm-1001",
+      "date": "2026-06-23",
+      "time": "09:00 - 10:30",
+      "court_name": "Court 1",
+      "player_names": ["Alex Morgan"],
+      "activity_type": "Book court",
+      "booking_type": "Normal"
+    },
+    {
+      "activity_id": "pm-1002",
+      "date": "2026-06-23",
+      "time": "12:00 - 13:00",
+      "court_name": "Court 3",
+      "player_names": ["Riley Chen"],
+      "activity_type": "Training",
+      "booking_type": "Lesson"
+    }
+  ]
+}

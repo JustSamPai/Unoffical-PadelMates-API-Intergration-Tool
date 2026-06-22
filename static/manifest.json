@@ -1,0 +1,9 @@
+{
+  "name": "Padel Booking Calendar",
+  "short_name": "Padel Calendar",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7f8",
+  "theme_color": "#1f4f5f",
+  "icons": []
+}
