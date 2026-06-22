@@ -30,7 +30,6 @@ turn into availability issues.
 - Uvicorn
 - Vanilla HTML, CSS, and JavaScript
 - Pytest
-- Ruff
 
 ## Features
 
