@@ -1,0 +1,662 @@
+import os
+import json
+import argparse
+import logging
+import sys
+import time as time_module
+from functools import lru_cache
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import requests
+from requests.exceptions import RequestException, Timeout, ConnectionError, HTTPError
+
+
+LOGIN_URL = "https://integrations.padelmates.io/login/"
+ACTIVITY_URL = "https://integrations.padelmates.io/home/activity/"
+
+CACHE_FILE = "booking_cache.json"
+LOG_FILE = "fetch_padel_bookings.log"
+
+LOCAL_TIMEZONE_NAME = "Europe/London"
+
+
+@lru_cache(maxsize=1)
+def get_local_timezone() -> ZoneInfo:
+    """
+    Loads the local timezone.
+
+    On Windows, this may require:
+    python -m pip install tzdata
+    """
+
+    try:
+        return ZoneInfo(LOCAL_TIMEZONE_NAME)
+
+    except ZoneInfoNotFoundError:
+        logging.error("Failed to load timezone: %s", LOCAL_TIMEZONE_NAME)
+        logging.error("On Windows, install timezone data with:")
+        logging.error("python -m pip install tzdata")
+        raise
+
+
+def setup_logging(log_level: str) -> None:
+    """
+    Sets up logging to both terminal and file.
+    """
+
+    numeric_log_level = getattr(logging, log_level.upper(), logging.INFO)
+
+    logger = logging.getLogger()
+    logger.setLevel(numeric_log_level)
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(funcName)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(numeric_log_level)
+    console_handler.setFormatter(formatter)
+
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(formatter)
+
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
+    logger.addHandler(file_handler)
+
+    logging.info("Logging started.")
+    logging.info("Console log level: %s", log_level.upper())
+    logging.info("File log path: %s", LOG_FILE)
+
+
+def mask_email(email: str) -> str:
+    """
+    Masks an email so logs do not expose the full address.
+    """
+
+    if not email or "@" not in email:
+        return "***"
+
+    name_part, domain_part = email.split("@", 1)
+
+    if len(name_part) <= 2:
+        masked_name = name_part[0] + "***"
+    else:
+        masked_name = name_part[:2] + "***"
+
+    return f"{masked_name}@{domain_part}"
+
+
+def mask_token(access_token: str) -> str:
+    """
+    Masks an access token for logging.
+    """
+
+    if not access_token:
+        return "***"
+
+    if len(access_token) <= 10:
+        return "***"
+
+    return f"{access_token[:6]}...{access_token[-4:]}"
+
+
+def extract_access_token(login_response_data: dict) -> str | None:
+    """
+    Extracts the access token from the login response.
+
+    Your response currently has top-level keys like:
+    ['status_code', 'success', 'message', 'user']
+
+    So the token is probably nested inside the user object.
+    This function checks top-level and nested dictionaries.
+    """
+
+    possible_token_keys = [
+        "access_token",
+        "accessToken",
+        "access_token_key",
+        "token",
+        "auth_token",
+        "authToken",
+        "jwt",
+        "jwt_token",
+    ]
+
+    def search_dict(data: dict, path: str = "root") -> str | None:
+        for token_key in possible_token_keys:
+            token_value = data.get(token_key)
+
+            if isinstance(token_value, str) and token_value.strip():
+                logging.debug("Access token found at path: %s.%s", path, token_key)
+                return token_value
+
+        for key, value in data.items():
+            if isinstance(value, dict):
+                logging.debug("Searching nested object: %s.%s", path, key)
+
+                nested_token = search_dict(
+                    data=value,
+                    path=f"{path}.{key}",
+                )
+
+                if nested_token:
+                    return nested_token
+
+        return None
+
+    return search_dict(login_response_data)
+
+
+def log_login_response_shape(login_response_data: dict) -> None:
+    """
+    Logs the structure of the login response without dumping sensitive values.
+    """
+
+    logging.info("Login response top-level keys: %s", list(login_response_data.keys()))
+
+    user_data = login_response_data.get("user")
+    if isinstance(user_data, dict):
+        logging.info("Login response nested user keys: %s", list(user_data.keys()))
+
+        for key, value in user_data.items():
+            if isinstance(value, dict):
+                logging.debug("Login response nested user.%s keys: %s", key, list(value.keys()))
+
+    data_object = login_response_data.get("data")
+    if isinstance(data_object, dict):
+        logging.info("Login response nested data keys: %s", list(data_object.keys()))
+
+
+def login(email: str, password: str, request_timeout_seconds: int) -> str:
+    """
+    Logs into Padelmates and returns an access token.
+    """
+
+    logging.info("Starting login request.")
+    logging.debug("Login URL: %s", LOGIN_URL)
+    logging.debug("Login email: %s", mask_email(email))
+    logging.debug("Request timeout seconds: %s", request_timeout_seconds)
+
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "email": email,
+        "password": password,
+    }
+
+    request_start_time = time_module.perf_counter()
+
+    try:
+        response = requests.post(
+            LOGIN_URL,
+            headers=headers,
+            json=payload,
+            timeout=request_timeout_seconds,
+        )
+
+        elapsed_seconds = time_module.perf_counter() - request_start_time
+
+        logging.info("Login response received in %.2f seconds.", elapsed_seconds)
+        logging.info("Login HTTP status code: %s", response.status_code)
+        logging.debug("Login response headers: %s", dict(response.headers))
+
+        response.raise_for_status()
+
+    except Timeout:
+        logging.exception("Login request timed out.")
+        raise
+
+    except ConnectionError:
+        logging.exception("Login connection error.")
+        raise
+
+    except HTTPError:
+        logging.exception("Login HTTP error. Response text: %s", response.text)
+        raise
+
+    except RequestException:
+        logging.exception("Login request failed.")
+        raise
+
+    try:
+        login_response_data = response.json()
+
+    except json.JSONDecodeError:
+        logging.exception("Login response was not valid JSON. Response text: %s", response.text)
+        raise
+
+    log_login_response_shape(login_response_data)
+
+    success = login_response_data.get("success")
+    message = login_response_data.get("message")
+
+    if success is False:
+        logging.error("Login API returned success=false. Message: %s", message)
+        raise ValueError(f"Login failed. API message: {message}")
+
+    access_token = extract_access_token(login_response_data)
+
+    if not access_token:
+        logging.error("Login succeeded, but no access token was found.")
+        logging.error("Check the response shape above and add the correct token key to possible_token_keys.")
+
+        raise ValueError(
+            "Login succeeded, but no access token was found. "
+            "Check fetch_padel_bookings.log for the response keys."
+        )
+
+    logging.info("Access token found: %s", mask_token(access_token))
+
+    return access_token
+
+
+def datetime_to_ms(datetime_value: datetime) -> int:
+    """
+    Converts a timezone-aware datetime into Unix milliseconds.
+    """
+
+    milliseconds = int(datetime_value.timestamp() * 1000)
+
+    logging.debug(
+        "Converted datetime to milliseconds. datetime=%s, milliseconds=%s",
+        datetime_value,
+        milliseconds,
+    )
+
+    return milliseconds
+
+
+def ms_to_datetime(milliseconds: int) -> datetime:
+    """
+    Converts Unix milliseconds into local datetime.
+    """
+
+    local_timezone = get_local_timezone()
+
+    datetime_value = datetime.fromtimestamp(milliseconds / 1000, tz=local_timezone)
+
+    logging.debug(
+        "Converted milliseconds to datetime. milliseconds=%s, datetime=%s",
+        milliseconds,
+        datetime_value,
+    )
+
+    return datetime_value
+
+
+def get_booking_name(activity_record: dict) -> str:
+    """
+    Gets the best available name for the booking/activity.
+    """
+
+    activity_id = activity_record.get("activity_id") or activity_record.get("_id")
+    logging.debug("Getting booking name for activity_id=%s", activity_id)
+
+    player_names = activity_record.get("player_names") or []
+
+    if player_names:
+        booking_name = ", ".join(player_names)
+        logging.debug("Using player_names as booking name: %s", booking_name)
+        return booking_name
+
+    coach_name = activity_record.get("coach_name")
+    if coach_name:
+        logging.debug("Using coach_name as booking name: %s", coach_name)
+        return coach_name
+
+    title = activity_record.get("title")
+    if title:
+        logging.debug("Using title as booking name: %s", title)
+        return title
+
+    logging.warning("No player_names, coach_name, or title found for activity_id=%s", activity_id)
+    return "Unknown"
+
+
+def simplify_activity_record(activity_record: dict) -> dict:
+    """
+    Converts a raw Padelmates activity record into a smaller booking dictionary.
+    """
+
+    activity_id = activity_record.get("activity_id") or activity_record.get("_id")
+
+    logging.debug("Simplifying activity record. activity_id=%s", activity_id)
+
+    if "start_datetime" not in activity_record:
+        logging.error("Missing start_datetime for activity_id=%s", activity_id)
+        raise KeyError(f"Missing start_datetime for activity_id={activity_id}")
+
+    if "end_datetime" not in activity_record:
+        logging.error("Missing end_datetime for activity_id=%s", activity_id)
+        raise KeyError(f"Missing end_datetime for activity_id={activity_id}")
+
+    start_datetime = ms_to_datetime(activity_record["start_datetime"])
+    end_datetime = ms_to_datetime(activity_record["end_datetime"])
+
+    booking_id = activity_record.get("activity_id") or activity_record.get("_id")
+    booking_name = get_booking_name(activity_record)
+
+    simplified_record = {
+        "booking_id": booking_id,
+        "date": start_datetime.strftime("%Y-%m-%d"),
+        "time": f"{start_datetime.strftime('%H:%M')} - {end_datetime.strftime('%H:%M')}",
+        "name": booking_name,
+        "name_and_id": f"{booking_name} | ID: {booking_id}",
+        "court_names": activity_record.get("court_names", []),
+        "activity_type": activity_record.get("activity_type"),
+        "category": activity_record.get("category"),
+        "raw_start_datetime": activity_record.get("start_datetime"),
+        "raw_end_datetime": activity_record.get("end_datetime"),
+    }
+
+    logging.debug("Simplified record: %s", simplified_record)
+
+    return simplified_record
+
+
+def fetch_bookings(
+    access_token: str,
+    club_id: str,
+    start_ms: int,
+    end_ms: int,
+    request_timeout_seconds: int,
+) -> list[dict]:
+    """
+    Fetches bookings/activity records from the Padelmates API.
+    """
+
+    logging.info("Starting bookings request.")
+    logging.debug("Activity URL: %s", ACTIVITY_URL)
+    logging.debug("Club ID: %s", club_id)
+    logging.debug("Start milliseconds: %s", start_ms)
+    logging.debug("End milliseconds: %s", end_ms)
+    logging.debug("Request timeout seconds: %s", request_timeout_seconds)
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
+
+    params = {
+        "club_id": club_id,
+        "start": start_ms,
+        "end": end_ms,
+    }
+
+    request_start_time = time_module.perf_counter()
+
+    try:
+        response = requests.get(
+            ACTIVITY_URL,
+            headers=headers,
+            params=params,
+            timeout=request_timeout_seconds,
+        )
+
+        elapsed_seconds = time_module.perf_counter() - request_start_time
+
+        logging.info("Bookings response received in %.2f seconds.", elapsed_seconds)
+        logging.info("Bookings HTTP status code: %s", response.status_code)
+        logging.debug("Final requested URL: %s", response.url)
+        logging.debug("Bookings response headers: %s", dict(response.headers))
+
+        response.raise_for_status()
+
+    except Timeout:
+        logging.exception("Bookings request timed out.")
+        raise
+
+    except ConnectionError:
+        logging.exception("Bookings connection error.")
+        raise
+
+    except HTTPError:
+        logging.exception("Bookings HTTP error. Response text: %s", response.text)
+        raise
+
+    except RequestException:
+        logging.exception("Bookings request failed.")
+        raise
+
+    try:
+        data = response.json()
+        logging.debug("Bookings JSON top-level keys: %s", list(data.keys()))
+
+    except json.JSONDecodeError:
+        logging.exception("Bookings response was not valid JSON. Response text: %s", response.text)
+        raise
+
+    activity_records = data.get("activity_records", [])
+
+    logging.info("Raw activity records received: %s", len(activity_records))
+
+    bookings = []
+
+    for index, activity_record in enumerate(activity_records):
+        try:
+            logging.debug("Processing activity record index=%s", index)
+            simplified_record = simplify_activity_record(activity_record)
+            bookings.append(simplified_record)
+
+        except Exception:
+            logging.exception(
+                "Failed to simplify activity record at index=%s. Raw record: %s",
+                index,
+                activity_record,
+            )
+            raise
+
+    logging.info("Simplified bookings created: %s", len(bookings))
+
+    bookings.sort(key=lambda booking: booking["raw_start_datetime"])
+
+    logging.info("Bookings sorted by raw_start_datetime.")
+
+    return bookings
+
+
+def save_booking_cache(bookings: list[dict]) -> None:
+    """
+    Saves the simplified bookings list to a local JSON cache file.
+    """
+
+    logging.info("Saving booking cache.")
+    logging.debug("Cache file path: %s", CACHE_FILE)
+    logging.debug("Bookings to save: %s", len(bookings))
+
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as cache_file:
+            json.dump(bookings, cache_file, indent=2, ensure_ascii=False)
+
+    except OSError:
+        logging.exception("Failed to write cache file.")
+        raise
+
+    logging.info("Booking cache saved successfully.")
+
+
+def print_booking_list(bookings: list[dict]) -> None:
+    """
+    Prints bookings as a list of date/time and name/id strings.
+    """
+
+    logging.info("Preparing printable booking list.")
+
+    booking_list = []
+
+    for booking in bookings:
+        booking_string = (
+            f"{booking['date']} | "
+            f"{booking['time']} | "
+            f"{booking['name_and_id']}"
+        )
+
+        booking_list.append(booking_string)
+
+    logging.info("Printable booking list prepared. Items: %s", len(booking_list))
+
+    print("\nBookings list:")
+    print(json.dumps(booking_list, indent=2, ensure_ascii=False))
+
+
+def parse_start_date(start_date: str | None) -> datetime:
+    """
+    Parses the provided start date or defaults to today at midnight.
+    """
+
+    logging.info("Parsing start date.")
+    logging.debug("Input start_date: %s", start_date)
+
+    local_timezone = get_local_timezone()
+
+    if start_date:
+        try:
+            parsed_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+
+        except ValueError:
+            logging.exception("Invalid start_date format. Expected YYYY-MM-DD.")
+            raise
+
+    else:
+        parsed_date = datetime.now(local_timezone).date()
+        logging.info("No start_date provided. Using today's date: %s", parsed_date)
+
+    start_datetime = datetime.combine(parsed_date, time.min, tzinfo=local_timezone)
+
+    logging.info("Parsed start datetime: %s", start_datetime)
+
+    return start_datetime
+
+
+def validate_arguments(args: argparse.Namespace) -> None:
+    """
+    Validates CLI arguments before making requests.
+    """
+
+    logging.info("Validating arguments.")
+
+    if not args.email:
+        logging.error("Missing email.")
+        raise ValueError("Missing email. Pass --email or set PADELMATES_EMAIL.")
+
+    if not args.password:
+        logging.error("Missing password.")
+        raise ValueError("Missing password. Pass --password or set PADELMATES_PASSWORD.")
+
+    if not args.club_id:
+        logging.error("Missing club_id.")
+        raise ValueError("Missing club_id. Pass --club_id.")
+
+    logging.info("Arguments validated successfully.")
+    logging.debug("club_id=%s", args.club_id)
+    logging.debug("email=%s", mask_email(args.email))
+    logging.debug("start_date=%s", args.start_date)
+    logging.debug("request_timeout_seconds=%s", args.request_timeout_seconds)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Login to Padelmates and fetch bookings for a 7-day period."
+    )
+
+    parser.add_argument(
+        "--club_id",
+        required=True,
+        help="Padelmates club ID.",
+    )
+
+    parser.add_argument(
+        "--email",
+        default=os.getenv("PADELMATES_EMAIL"),
+        help="Padelmates login email. Can also be set using PADELMATES_EMAIL.",
+    )
+
+    parser.add_argument(
+        "--password",
+        default=os.getenv("PADELMATES_PASSWORD"),
+        help="Padelmates login password. Can also be set using PADELMATES_PASSWORD.",
+    )
+
+    parser.add_argument(
+        "--start_date",
+        help="Start date in YYYY-MM-DD format. Defaults to today.",
+    )
+
+    parser.add_argument(
+        "--request_timeout_seconds",
+        type=int,
+        default=30,
+        help="Request timeout in seconds. Defaults to 30.",
+    )
+
+    parser.add_argument(
+        "--log_level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Console log level. Defaults to INFO.",
+    )
+
+    args = parser.parse_args()
+
+    setup_logging(args.log_level)
+
+    logging.info("Script started.")
+
+    try:
+        validate_arguments(args)
+
+        access_token = login(
+            email=args.email,
+            password=args.password,
+            request_timeout_seconds=args.request_timeout_seconds,
+        )
+
+        start_datetime = parse_start_date(args.start_date)
+        end_datetime = start_datetime + timedelta(days=7)
+
+        logging.info("Calculated end datetime: %s", end_datetime)
+
+        start_ms = datetime_to_ms(start_datetime)
+        end_ms = datetime_to_ms(end_datetime) - 1
+
+        logging.info("7-day query window created.")
+        logging.info("Start datetime: %s", start_datetime)
+        logging.info("End datetime: %s", end_datetime)
+        logging.info("Start milliseconds: %s", start_ms)
+        logging.info("End milliseconds: %s", end_ms)
+
+        bookings = fetch_bookings(
+            access_token=access_token,
+            club_id=args.club_id,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            request_timeout_seconds=args.request_timeout_seconds,
+        )
+
+        save_booking_cache(bookings)
+        print_booking_list(bookings)
+
+        logging.info("Script completed successfully.")
+        print(f"\nSaved {len(bookings)} bookings to {CACHE_FILE}")
+        print(f"Logs saved to {LOG_FILE}")
+
+    except Exception as error:
+        logging.exception("Script failed with an error.")
+
+        print("\nScript failed.")
+        print(f"Error type: {type(error).__name__}")
+        print(f"Error message: {error}")
+        print(f"Check the log file for details: {LOG_FILE}")
+
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
